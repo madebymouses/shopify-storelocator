@@ -1,0 +1,225 @@
+let markers = [];
+let map;
+let infoWindows = [];
+let clusterer;
+
+function initMap() {
+    const myLatLng = { lat: 52.512889997142686, lng: 6.095719383205743 };
+    map = new google.maps.Map(document.getElementById("map"), {
+        zoom: 4,
+        center: myLatLng,
+    });
+
+    $.getJSON('https://sheets.googleapis.com/v4/spreadsheets/<YOUR SHEET ID>/values/Sheet1?key=<YOUR API KEY>', function(data) {
+        const stores = data.values;
+        markers = [];
+
+        for(i=1;i<stores.length;i++) {
+            const storeName = stores[i][0];
+            const storeAddress = stores[i][5];
+            const storeLatitude = parseFloat(stores[i][6]);
+            const storeLongitude = parseFloat(stores[i][7]);
+
+            markers.push(createMarker(storeLatitude, storeLongitude, storeAddress, storeName, map));
+        }
+
+        const renderer = {
+            render({ count, position }) {
+                let renderIcon = "{{ 'cluster_black.svg' | asset_url: }}";
+                let renderTextColor = "white";
+
+                if(parseInt(count) > 10) {
+                    renderIcon = "{{ 'cluster_white.svg' | asset_url: }}";
+                    renderTextColor = "black";
+                }
+
+                renderIcon = {
+                    url: renderIcon,
+                    scaledSize: new google.maps.Size(50, 50)
+                };
+
+                return new google.maps.Marker({
+                    label: { text: String(count), color: renderTextColor, fontSize: "12px" },
+                    position,
+                    icon: renderIcon,
+                    zIndex: Number(google.maps.Marker.MAX_ZINDEX) + count,
+                });
+            }
+        };
+
+
+        clusterer = new markerClusterer.MarkerClusterer({
+            map,
+            markers,
+            renderer
+        });
+
+        google.maps.event.addListener(map, 'tilesloaded', function() {
+            showVisibleMarkers(map, markers);
+        });
+
+        google.maps.event.addListener(map, 'bounds_changed', function() {
+            showVisibleMarkers(map, markers);
+        });
+
+        google.maps.event.addListener(map, 'idle', function() {
+            showVisibleMarkers(map, markers);
+        });
+    });
+}
+
+window.initialiseMap = initMap;
+
+function createMarker(latitude, longitude, address, title, map) {
+    let coords = null;
+
+    const infowindow = new google.maps.InfoWindow({
+        content: '<strong>' + title + '</strong><br />' + address
+    });
+
+    const marker = new google.maps.Marker({
+        position: { lat: latitude, lng: longitude },
+        map,
+        title: title,
+        address: address
+    });
+
+    marker.addListener("click", () => {
+        $.each(infoWindows, function(i,infoWindow) {
+            infoWindow.close();
+        });
+
+        infowindow.open({
+            anchor: marker,
+            map,
+            shouldFocus: false,
+        });
+    });
+
+    infoWindows.push(infowindow);
+
+    return marker;
+}
+
+function showVisibleMarkers(map, markers) {
+    var bounds = map.getBounds(),
+        count = 0,
+        visibleStores = $('<ul></ul>');
+
+    if($('#maps-search').val()) {
+        search($('#maps-search').val(), markers);
+    } else {
+        for (var i = 0; i < markers.length; i++) {
+            var marker = markers[i];
+
+            if(bounds.contains(marker.getPosition())===true) {
+                var store = $('<li></li>').addClass('store').attr('data-i', i);
+                store.click(function(){
+                    map.panTo(markers[$(this).data('i')].getPosition());
+
+                    google.maps.event.trigger(markers[$(this).data('i')], 'click');
+                });
+                store.html('<strong>' + marker.title + '</strong><br>' + marker.address + '<small class="distance"><a href="https://www.google.com/maps?f=d&daddr=' + encodeURI(marker.address) + '&dirflg=d" target="_blank">Route</a></small>');
+                store.appendTo(visibleStores);
+                count++;
+            }
+        }
+
+        $('#locations-container').html('');
+        visibleStores.appendTo($('#locations-container'));
+
+        $('#locations-mobile').html('');
+        visibleStores.clone().appendTo($('#locations-mobile'));
+    }
+}
+
+function search(query, markers, zoom = false) {
+    $.getJSON('https://maps.googleapis.com/maps/api/geocode/json?address=' + encodeURIComponent(query) + '&key=AIzaSyADarKhL2mBlCnM<YOUR API KEY>', function(data) {
+        if(data.status == 'ZERO_RESULTS') {
+            alert('No results were found');
+            $('#maps-search').val('');
+            return false;
+        }
+
+        var location = data.results[0].geometry.location;
+        var search_area, in_area = [];
+
+        if(zoom) {
+            map.panTo(location);
+            map.setZoom(10);
+        }
+
+        search_area = {
+            strokeColor: '#FF0000',
+            strokeOpacity: 0.8,
+            strokeWeight: 2,
+            center: new google.maps.LatLng(location.lat, location.lng),
+            radius: 50000
+        };
+
+        search_area = new google.maps.Circle(search_area);
+
+        $.each(markers, function(i,marker) {
+            let position = marker.getPosition();
+            marker.setVisible(false);
+            $('.store[data-i="' + i +'"]').hide();
+
+            if (position.lat && position.lng && google.maps.geometry.spherical.computeDistanceBetween(marker.getPosition(), search_area.getCenter()) <= search_area.getRadius()) {
+                marker.setVisible(true);
+                $('.store[data-i="' + i +'"]').show();
+
+                $('.store[data-i="' + i +'"]').find('.distance').remove();
+
+                const distance = google.maps.geometry.spherical.computeDistanceBetween(marker.getPosition(), search_area.getCenter());
+                $('.store[data-i="' + i +'"]').attr('data-distance', distance.toFixed());
+                $('.store[data-i="' + i +'"]').append('<small class="distance">Distance: ' + (distance/1000).toFixed(1) + 'km - <a href="https://www.google.com/maps?f=d&daddr=' + encodeURI(marker.address) + '&dirflg=d" target="_blank">Route</a></small>');
+            }
+        });
+
+        sortLocations();
+    });
+}
+
+function autocomplete() {
+    const options = {
+        fields: ["name"],
+        strictBounds: false,
+        types: ["geocode"],
+    };
+
+    const autocomplete = new google.maps.places.Autocomplete(document.getElementById("maps-search"), options);
+}
+
+$('#maps-search').on('keyup', function(e) {
+    autocomplete();
+
+    if(e.keyCode == 13)
+    {
+        submitSearch();
+    }
+});
+
+$('#search button').on('click', function() {
+    submitSearch();
+});
+
+function submitSearch() {
+    $.each(infoWindows, function(i,infoWindow) {
+        infoWindow.close();
+    });
+
+    if($('#maps-search').val() == '') {
+        $.each(markers, function(i,marker) {
+            marker.setVisible(true);
+        });
+    } else {
+        search($('#maps-search').val(), markers, true);
+    }
+    $('.store').show();
+}
+
+function sortLocations() {
+    $('#locations-container ul li').sort(function(a, b) {
+        return +a.getAttribute('data-distance') - +b.getAttribute('data-distance');
+    }).appendTo('#locations-container ul');
+}
